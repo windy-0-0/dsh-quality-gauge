@@ -12,7 +12,7 @@
  * 数据源：会话事件流（turn/start、tool/call、tool/result）。
  * 架构：sessionProjections 投影（可回放、重启不丢）+ HTTP 直读 API（client 轮询）。
  */
-import z from 'schemastery'
+import { z } from 'zod'
 import { registerJudge, readJudgments, DEFAULT_JUDGE_CONFIG, type JudgeConfig } from './judge.js'
 
 export const name = 'dsh-quality-gauge'
@@ -294,7 +294,40 @@ function view(state: GaugeState) {
   }
 }
 
+/** 投影 wire 视图 schema（模块级：供 apply 启动断言自检 + 注册复用）。 */
+const viewSchema = z.object({
+  turns: z.array(z.any()),
+  totals: z.object({
+    toolCalls: z.number(), toolSuccess: z.number(), toolFail: z.number(),
+    retries: z.number(), duplicates: z.number(), loops: z.number(),
+    redundant: z.number(), noProgressRatio: z.number(),
+  }),
+})
+
+/**
+ * 防再发护栏（2026-09-06 事故复盘）：sessionProjections 的 stateSchema/viewSchema
+ * 必须是带 .parse 的 zod schema。曾误用 schemastery（可调用式、无 .parse），注册
+ * 本身不报错，但会话历史恢复(restore)调用 viewSchema.parse 时抛
+ * "wire.viewSchema.parse is not a function"，导致整个会话视图不可用（用户只能看到
+ * 历史加载失败、看不到任何新消息）。此处 fail-fast：任何不带 .parse 的 schema 在
+ * 注册前直接抛错，绝不让坏 schema 进入投影注册表。
+ */
+function assertSchemaParse(): void {
+  for (const [label, s] of [
+    ['stateSchema', stateSchema],
+    ['viewSchema', viewSchema],
+  ] as const) {
+    if (!s || typeof (s as { parse?: unknown }).parse !== 'function') {
+      throw new Error(
+        `dsh-quality-gauge: ${label} lacks .parse() (got ${s === null || s === undefined ? String(s) : typeof (s as { parse?: unknown }).parse}) — ` +
+        'projection schemas must be zod schemas, not schemastery/callable schemas; refusing to register',
+      )
+    }
+  }
+}
+
 export function apply(ctx: any, config: Config): void {
+  assertSchemaParse()
   registerJudge(ctx, config)
   // HTTP 直读 API（client 轮询）
   const webServer = ctx.get('webServer')
@@ -364,17 +397,7 @@ export function apply(ctx: any, config: Config): void {
       stateSchema,
       init,
       apply: reduceQuality,
-      wire: {
-        viewSchema: z.object({
-          turns: z.array(z.any()),
-          totals: z.object({
-            toolCalls: z.number(), toolSuccess: z.number(), toolFail: z.number(),
-            retries: z.number(), duplicates: z.number(), loops: z.number(),
-            redundant: z.number(), noProgressRatio: z.number(),
-          }),
-        }),
-        view,
-      },
+      wire: { viewSchema, view },
       stateVersion: 2,
     })
   })
