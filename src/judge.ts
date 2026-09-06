@@ -321,8 +321,35 @@ export function registerJudge(ctx: any, config: JudgeConfig): void {
     })
   }
 
+  /** 历史回放预热：session/event 只覆盖注入后的事件，投影能回放但拿不到文本。
+   *  手动评审时若缓存缺失，就从会话日志里回放最后一条 user/assistant 消息。 */
+  function warmup(sid: string): void {
+    if (lastAssistant.has(sid)) return
+    try {
+      const sessions = ctx.get('sessions')
+      if (!sessions || typeof sessions.list !== 'function') return
+      const session = sessions.list().find((s: any) => s && String(s.id) === sid)
+      if (!session || typeof session.ownEvents !== 'function') return
+      const events: any[] = session.ownEvents() as any[]
+      for (const event of events) {
+        if (!event || typeof event !== 'object') continue
+        if (event.type === 'user/message') {
+          const blocks: any[] = Array.isArray(event?.data?.message?.content) ? event.data.message.content : []
+          const text = blocks.filter((b) => b && b.type === 'text').map((b) => String(b.text || '')).join('\n')
+          if (text) lastUser.set(sid, text)
+        } else if (event.type === 'assistant/message') {
+          const blocks: any[] = Array.isArray(event?.data?.message?.content) ? event.data.message.content : []
+          const text = blocks.filter((b) => b && b.type === 'text').map((b) => String(b.text || '')).join('\n')
+          const mid = typeof event?.data?.message?.id === 'string' ? event.data.message.id : ''
+          if (mid && text) lastAssistant.set(sid, { messageId: mid, text })
+        }
+      }
+    } catch { /* 预热失败不阻塞评审 */ }
+  }
+
   /** 手动触发入口（供 API/client 使用） */
   ctx.__dshQualityJudge = async (sid: string) => {
+    warmup(sid)
     const last = lastAssistant.get(sid)
     if (!last) return { ok: false, error: 'no assistant message cached' }
     await runJudge({

@@ -1,6 +1,6 @@
 {
   "name": "dsh-quality-gauge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH 执行质量评估（L1 确定性指标）：工具成功率/重试/重复调用/错误循环，每轮与会话聚合",
   "private": true,
   "type": "module",
