@@ -1,0 +1,4 @@
+# Mounts dsh-quality-gauge into the profile that installed it.
+- insert:
+    - id: quality-gauge
+      name: "dsh-quality-gauge"
