@@ -7,6 +7,7 @@
  *   - 失败重试率（同轮失败后同工具再调用）
  *   - 重复调用检测（同轮同工具同参数 ≥2 次）
  *   - 错误循环检测（连续 ≥3 次同工具失败且无成功突破）
+ *   - 无进展步（同轮同工具同参数且结果指纹一致 ≥2 次；空结果不判定）
  *   - 每轮步骤数（tool 调用步数）
  * 数据源：会话事件流（turn/start、tool/call、tool/result）。
  * 架构：sessionProjections 投影（可回放、重启不丢）+ HTTP 直读 API（client 轮询）。
@@ -41,6 +42,7 @@ const turnSchema = z.object({
   retries: z.number(),
   duplicates: z.number(),
   loops: z.number(),
+  redundant: z.number(),
   lastTs: z.number(),
   lastMessageId: z.string(),
 })
@@ -52,6 +54,7 @@ const totalsSchema = z.object({
   retries: z.number(),
   duplicates: z.number(),
   loops: z.number(),
+  redundant: z.number(),
 })
 
 const stateSchema = z.object({
@@ -65,11 +68,13 @@ const stateSchema = z.object({
     retries: z.number(),
     duplicates: z.number(),
     loops: z.number(),
+    redundant: z.number(),
     lastFailName: z.string(),
     failStreak: z.number(),
     seenCalls: z.array(z.string()),
     seenFailNames: z.array(z.string()),
     callPairs: z.array(z.array(z.string())),
+    lastResultByKey: z.array(z.array(z.string())),
     lastMessageId: z.string(),
   }),
 })
@@ -83,6 +88,7 @@ type GaugeState = {
     retries: number
     duplicates: number
     loops: number
+    redundant: number
     lastTs: number
     lastMessageId: string
   }>
@@ -93,6 +99,7 @@ type GaugeState = {
     retries: number
     duplicates: number
     loops: number
+    redundant: number
   }
   currentTurn: number
   current: {
@@ -102,26 +109,28 @@ type GaugeState = {
     retries: number
     duplicates: number
     loops: number
+    redundant: number
     lastFailName: string
     failStreak: number
     seenCalls: string[]
     seenFailNames: string[]
-    callPairs: [string, string][]
+    callPairs: [string, string, string][]
+    lastResultByKey: [string, string][]
     lastMessageId: string
   }
 }
 
 function emptyCurrent(): GaugeState['current'] {
   return {
-    toolCalls: 0, toolSuccess: 0, toolFail: 0, retries: 0, duplicates: 0, loops: 0,
-    lastFailName: '', failStreak: 0, seenCalls: [], seenFailNames: [], callPairs: [], lastMessageId: '',
+    toolCalls: 0, toolSuccess: 0, toolFail: 0, retries: 0, duplicates: 0, loops: 0, redundant: 0,
+    lastFailName: '', failStreak: 0, seenCalls: [], seenFailNames: [], callPairs: [], lastResultByKey: [], lastMessageId: '',
   }
 }
 
 function init(): GaugeState {
   return {
     turns: [],
-    totals: { toolCalls: 0, toolSuccess: 0, toolFail: 0, retries: 0, duplicates: 0, loops: 0 },
+    totals: { toolCalls: 0, toolSuccess: 0, toolFail: 0, retries: 0, duplicates: 0, loops: 0, redundant: 0 },
     currentTurn: 0,
     current: emptyCurrent(),
   }
@@ -132,7 +141,7 @@ function finalizeTurn(state: GaugeState): void {
   const existing = state.turns.find((t) => t.turn === state.currentTurn)
   const rec = existing ?? {
     turn: state.currentTurn,
-    toolCalls: 0, toolSuccess: 0, toolFail: 0, retries: 0, duplicates: 0, loops: 0,
+    toolCalls: 0, toolSuccess: 0, toolFail: 0, retries: 0, duplicates: 0, loops: 0, redundant: 0,
     lastTs: 0, lastMessageId: '',
   }
   rec.toolCalls += c.toolCalls
@@ -141,6 +150,7 @@ function finalizeTurn(state: GaugeState): void {
   rec.retries += c.retries
   rec.duplicates += c.duplicates
   rec.loops += c.loops
+  rec.redundant += c.redundant
   rec.lastTs = Date.now() / 1000
   rec.lastMessageId = c.lastMessageId || rec.lastMessageId
   if (existing === undefined) state.turns.push(rec)
@@ -152,8 +162,29 @@ function finalizeTurn(state: GaugeState): void {
   state.totals.retries += c.retries
   state.totals.duplicates += c.duplicates
   state.totals.loops += c.loops
+  state.totals.redundant += c.redundant
 
   state.current = emptyCurrent()
+}
+
+/** 结果指纹：tool-result 块内文本/结构化内容的紧凑摘要。
+ *  空结果返回 ''（不参与无进展判定——状态变更型工具常以空输出确认成功）。 */
+function resultFingerprint(blocks: any[]): string {
+  try {
+    const first: any = blocks && blocks[0]
+    const inner: any[] = Array.isArray(first?.content) ? first.content : (Array.isArray(blocks) ? blocks : [])
+    const parts: string[] = []
+    for (const b of inner) {
+      if (typeof b === 'string') { if (b) parts.push(b); continue }
+      if (!b || typeof b !== 'object') continue
+      if (b.type === 'text' && typeof b.text === 'string' && b.text) parts.push(b.text)
+      else { try { parts.push(JSON.stringify(b)) } catch { /* skip */ } }
+    }
+    const fp = parts.join('\n').trim()
+    return fp.length > 0 ? fp.slice(0, 2000) : ''
+  } catch {
+    return ''
+  }
 }
 
 function reduceQuality(state: GaugeState, event: any): GaugeState {
@@ -181,23 +212,38 @@ function reduceQuality(state: GaugeState, event: any): GaugeState {
     state.current.toolCalls += 1
     const cid = typeof data?.callId === 'string' ? data.callId : ''
     if (cid && name) {
-      state.current.callPairs.push([cid, name])
+      state.current.callPairs.push([cid, name, argsKey])
       if (state.current.callPairs.length > 200) state.current.callPairs = state.current.callPairs.slice(-200)
     }
     return state
   }
 
   if (type === 'tool/result') {
-    // content[0] 为 { type:'tool-result', ..., isError }
+    // content[0] 为 { type:'tool-result', toolCallId, content, isError }
+    // 注意：tool/result 事件顶层没有 callId，必须从 tool-result 块取
     const blocks: any[] = Array.isArray(data?.message?.content) ? data.message.content : []
     const first: any = blocks[0]
     const isError = first && first.type === 'tool-result' && first.isError === true
-    const cid = typeof data?.callId === 'string' ? data.callId : ''
+    const cid = typeof first?.toolCallId === 'string' ? first.toolCallId
+      : (typeof data?.callId === 'string' ? data.callId : '')
     let callName = ''
+    let argsKey = ''
     if (cid) {
       for (let i = state.current.callPairs.length - 1; i >= 0; i--) {
-        if (state.current.callPairs[i][0] === cid) { callName = state.current.callPairs[i][1]; break }
+        if (state.current.callPairs[i][0] === cid) {
+          callName = state.current.callPairs[i][1]
+          argsKey = typeof state.current.callPairs[i][2] === 'string' ? state.current.callPairs[i][2] : ''
+          break
+        }
       }
+    }
+    // 无进展步：同轮同工具同参数的结果指纹与上一次完全一致 → 可证明的零新信息
+    const fp = resultFingerprint(blocks)
+    if (argsKey && fp) {
+      const prev = state.current.lastResultByKey.find((p) => p[0] === argsKey)
+      if (prev !== undefined && prev[1] === fp) state.current.redundant += 1
+      state.current.lastResultByKey.push([argsKey, fp])
+      if (state.current.lastResultByKey.length > 100) state.current.lastResultByKey = state.current.lastResultByKey.slice(-100)
     }
     if (isError) {
       state.current.toolFail += 1
@@ -230,6 +276,7 @@ function reduceQuality(state: GaugeState, event: any): GaugeState {
 }
 
 function view(state: GaugeState) {
+  const ratio = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 1000 : 0)
   return {
     turns: state.turns.map((t) => ({
       turn: t.turn,
@@ -239,9 +286,11 @@ function view(state: GaugeState) {
       retries: t.retries,
       duplicates: t.duplicates,
       loops: t.loops,
+      redundant: t.redundant,
+      noProgressRatio: ratio(t.redundant, t.toolCalls),
       lastMessageId: t.lastMessageId,
     })),
-    totals: state.totals,
+    totals: { ...state.totals, noProgressRatio: ratio(state.totals.redundant, state.totals.toolCalls) },
   }
 }
 
@@ -315,8 +364,18 @@ export function apply(ctx: any, config: Config): void {
       stateSchema,
       init,
       apply: reduceQuality,
-      wire: { viewSchema: z.object({ turns: z.array(z.any()), totals: totalsSchema }), view },
-      stateVersion: 1,
+      wire: {
+        viewSchema: z.object({
+          turns: z.array(z.any()),
+          totals: z.object({
+            toolCalls: z.number(), toolSuccess: z.number(), toolFail: z.number(),
+            retries: z.number(), duplicates: z.number(), loops: z.number(),
+            redundant: z.number(), noProgressRatio: z.number(),
+          }),
+        }),
+        view,
+      },
+      stateVersion: 2,
     })
   })
 }

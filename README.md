@@ -11,6 +11,7 @@
 | 工具调用成功率 | 成功数 / 总调用数（`isError` 权威失败标记） | SWE-bench 式程序化判定 |
 | 失败重试 | 失败后同工具再次调用 | ToolEmu 风险维度 |
 | 重复调用 | 同轮同工具同参数 ≥2 次 | 过程质量信号 |
+| 无进展步 | 同轮同工具同参数且结果指纹完全一致 ≥2 次（可证明零新信息；空结果不判定——状态变更型工具常以空输出确认成功） | AgentBoard progress-rate 反面 |
 | 错误循环 | 连续 ≥3 次失败（每 3 次计 1） | AgentBoard progress-rate 反面 |
 | 每轮步骤数 | 工具调用步数 | AgentBench 轨迹惯例 |
 
@@ -34,8 +35,8 @@ npm install dsh-quality-gauge
 ## Roadmap
 
 - [x] v0.1 L1 确定性指标（成功率/重试/重复/循环）+ 每轮与会话展示
-- [ ] 无进展步占比（状态 diff 判定）
-- [ ] L2 按需 LLM-judge（rubric + 多采样 + 防偏差协议）
+- [x] v0.3 无进展步占比（同工具同参数同结果指纹判定）
+- [x] L2 按需 LLM-judge（rubric + 多采样 + 防偏差协议）
 
 ## License
 

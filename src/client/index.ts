@@ -22,12 +22,23 @@ interface TurnRec {
   retries: number
   duplicates: number
   loops: number
+  redundant: number
+  noProgressRatio?: number
   lastMessageId: string
 }
 
 interface QualityView {
   turns: TurnRec[]
-  totals: { toolCalls: number; toolSuccess: number; toolFail: number; retries: number; duplicates: number; loops: number }
+  totals: {
+    toolCalls: number
+    toolSuccess: number
+    toolFail: number
+    retries: number
+    duplicates: number
+    loops: number
+    redundant: number
+    noProgressRatio?: number
+  }
 }
 
 function useQualityView(sessionId: string | undefined, intervalMs: number): QualityView | null {
@@ -84,10 +95,11 @@ function TurnQuality(props: { messageId?: unknown; sessionId?: string }): React.
     'div',
     {
       style: { display: 'flex', alignItems: 'center', gap: '10px', fontSize: '11px', lineHeight: 1, color, padding: '0 2px', userSelect: 'none' },
-      title: `本轮工具调用 ${rec.toolCalls} · 成功 ${rec.toolSuccess} · 失败 ${rec.toolFail} · 重试 ${rec.retries} · 重复 ${rec.duplicates} · 错误循环 ${rec.loops}`,
+      title: `本轮工具调用 ${rec.toolCalls} · 成功 ${rec.toolSuccess} · 失败 ${rec.toolFail} · 重试 ${rec.retries} · 重复 ${rec.duplicates} · 无进展 ${rec.redundant} · 错误循环 ${rec.loops}`,
     },
     React.createElement('span', null, `🛠 ${rec.toolSuccess}✓/${rec.toolFail}✗`),
     rec.retries > 0 ? React.createElement('span', null, `重试 ${rec.retries}`) : null,
+    rec.redundant > 0 ? React.createElement('span', { style: { color: 'var(--dsw-alias-state-warn-primary, #b8860b)' } }, `无进展 ${rec.redundant}`) : null,
     rec.loops > 0 ? React.createElement('span', { style: { fontWeight: 600 } }, `循环 ${rec.loops}`) : null,
     judge && Number.isFinite(judge.mean)
       ? React.createElement('span', {
@@ -110,12 +122,13 @@ function TotalQuality(props: { sessionId?: string }): React.ReactElement | null 
   const totals = view?.totals
   if (totals === undefined || !Number.isFinite(totals.toolCalls) || totals.toolCalls <= 0) return null
   const successRate = totals.toolCalls > 0 ? (totals.toolSuccess / totals.toolCalls) * 100 : 0
+  const noProg = Number.isFinite(totals.noProgressRatio) ? (totals.noProgressRatio as number) * 100 : 0
   const color = totals.loops > 0 || totals.toolFail > 0 ? DANGER : OK
   return React.createElement(
     'span',
     {
       style: { fontSize: '11.5px', color, userSelect: 'none', whiteSpace: 'nowrap' },
-      title: `工具调用 ${totals.toolCalls} · 成功 ${totals.toolSuccess} · 失败 ${totals.toolFail} · 重试 ${totals.retries} · 重复 ${totals.duplicates} · 错误循环 ${totals.loops}`,
+      title: `工具调用 ${totals.toolCalls} · 成功 ${totals.toolSuccess} · 失败 ${totals.toolFail} · 重试 ${totals.retries} · 重复 ${totals.duplicates} · 无进展 ${totals.redundant}(${noProg.toFixed(1)}%) · 错误循环 ${totals.loops}`,
     },
     `🛠 ${successRate.toFixed(0)}% · 循环 ${totals.loops}`,
   )
@@ -136,7 +149,7 @@ function LatestTurnQuality(props: { sessionId?: string }): React.ReactElement | 
         display: 'flex', alignItems: 'center', gap: '8px',
         fontSize: '11px', color, padding: '1px 6px 0', userSelect: 'none',
       },
-      title: `上一轮工具调用 ${last.toolCalls} · 成功 ${last.toolSuccess} · 失败 ${last.toolFail} · 重试 ${last.retries} · 重复 ${last.duplicates} · 错误循环 ${last.loops}`,
+      title: `上一轮工具调用 ${last.toolCalls} · 成功 ${last.toolSuccess} · 失败 ${last.toolFail} · 重试 ${last.retries} · 重复 ${last.duplicates} · 无进展 ${last.redundant} · 错误循环 ${last.loops}`,
     },
     React.createElement('span', null, `🛠 上轮 ${last.toolSuccess}✓/${last.toolFail}✗ · 重试 ${last.retries} · 循环 ${last.loops}`),
   )
