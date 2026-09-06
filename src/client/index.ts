@@ -51,8 +51,31 @@ function useQualityView(sessionId: string | undefined, intervalMs: number): Qual
   return data
 }
 
+function useJudgment(messageId: unknown): any | null {
+  const [judge, setJudge] = React.useState<any | null>(null)
+  React.useEffect(() => {
+    if (!messageId) { setJudge(null); return }
+    let alive = true
+    const poll = () => {
+      fetch('/dsh-quality-gauge/api/judgments?messageId=' + encodeURIComponent(String(messageId)))
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (alive && d && d.ok && Array.isArray(d.judgments) && d.judgments.length > 0) {
+            setJudge(d.judgments[d.judgments.length - 1])
+          }
+        })
+        .catch(() => {})
+    }
+    poll()
+    const id = setInterval(poll, 10000)
+    return () => { alive = false; clearInterval(id) }
+  }, [messageId])
+  return judge
+}
+
 function TurnQuality(props: { messageId?: unknown; sessionId?: string }): React.ReactElement | null {
   const view = useQualityView(props.sessionId, 3000)
+  const judge = useJudgment(props.messageId)
   if (view === null) return null
   const rec = view.turns.find((t) => t.lastMessageId !== '' && t.lastMessageId === props.messageId)
   if (rec === undefined || !Number.isFinite(rec.toolCalls) || rec.toolCalls <= 0) return null
@@ -66,6 +89,19 @@ function TurnQuality(props: { messageId?: unknown; sessionId?: string }): React.
     React.createElement('span', null, `🛠 ${rec.toolSuccess}✓/${rec.toolFail}✗`),
     rec.retries > 0 ? React.createElement('span', null, `重试 ${rec.retries}`) : null,
     rec.loops > 0 ? React.createElement('span', { style: { fontWeight: 600 } }, `循环 ${rec.loops}`) : null,
+    judge && Number.isFinite(judge.mean)
+      ? React.createElement('span', {
+          style: { color: judge.lowConfidence ? 'var(--dsw-alias-state-warn-primary, #b8860b)' : 'var(--dsw-alias-state-success-primary, #2e9e5b)' },
+          title: `评委 ${judge.model} · n=${judge.n} · mean=${judge.mean} · std=${judge.std}` +
+            ' · 正确性 ' + judge.scores.correctness +
+            ' · 有用性 ' + judge.scores.helpfulness +
+            ' · 相关性 ' + judge.scores.relevance +
+            ' · 简洁性 ' + judge.scores.conciseness +
+            ' · 指令遵循 ' + judge.scores.instruction_following +
+            ' · 格式 ' + judge.scores.format +
+            (judge.lowConfidence ? '（低置信）' : ''),
+        }, `⭐ ${judge.mean.toFixed(1)}${judge.lowConfidence ? '?' : ''}`)
+      : null,
   )
 }
 

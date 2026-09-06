@@ -1,6 +1,6 @@
 {
   "name": "dsh-quality-gauge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH 执行质量评估（L1 确定性指标）：工具成功率/重试/重复调用/错误循环，每轮与会话聚合",
   "private": true,
   "type": "module",
@@ -22,7 +22,8 @@
     "schemastery": "^3.18.0",
     "@deepseek-ai/dsh-client-ui-slots": ">=0.0.1-rc <2",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.0.1-rc <2"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
@@ -32,7 +33,8 @@
     "cordis": "4.0.0-rc.8",
     "schemastery": "^3.18.0",
     "typescript": "^5.9.0",
-    "tsdown": "^0.22.14"
+    "tsdown": "^0.22.14",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

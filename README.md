@@ -40,3 +40,9 @@ npm install dsh-quality-gauge
 ## License
 
 BSD-3-Clause
+
+## L2 按需评分（v0.2）
+
+- **触发**：L1 失败/循环轮自动触发（可关）+ 可配随机采样（默认关，成本优先）+ 手动 API
+- **协议**：六维 rubric（正确性/有用性/相关性/简洁性/指令遵循/格式）冻结 v1；n=3 采样（temp 0.7）报告 mean±std；std>2 标低置信；评委默认 `deepseek-v4-flash`（与被评模型分离）；被评内容置于分隔符内声明为不可信数据（防注入）；冗长不得加分
+- **成本**：仅触发时调用；评委费用自动计入 dsh-cost-meter / dsh-usage-guard 账本

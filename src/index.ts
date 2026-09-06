@@ -12,8 +12,24 @@
  * 架构：sessionProjections 投影（可回放、重启不丢）+ HTTP 直读 API（client 轮询）。
  */
 import z from 'schemastery'
+import { registerJudge, readJudgments, DEFAULT_JUDGE_CONFIG, type JudgeConfig } from './judge.js'
 
 export const name = 'dsh-quality-gauge'
+
+export interface Config extends JudgeConfig {
+  // 全部评审配置沿用 judge.ts 的 JudgeConfig（默认见 DEFAULT_JUDGE_CONFIG）
+}
+
+export const Config = z.object({
+  enabled: z.boolean().default(DEFAULT_JUDGE_CONFIG.enabled),
+  judgeProvider: z.string().default(DEFAULT_JUDGE_CONFIG.judgeProvider),
+  judgeModel: z.string().default(DEFAULT_JUDGE_CONFIG.judgeModel),
+  judgeSamples: z.number().min(1).max(7).default(DEFAULT_JUDGE_CONFIG.judgeSamples),
+  judgeTemperature: z.number().min(0).max(1.5).default(DEFAULT_JUDGE_CONFIG.judgeTemperature),
+  sampleRate: z.number().min(0).max(1).default(DEFAULT_JUDGE_CONFIG.sampleRate),
+  judgeFailTurns: z.boolean().default(DEFAULT_JUDGE_CONFIG.judgeFailTurns),
+  judgeTimeoutMs: z.number().min(5000).default(DEFAULT_JUDGE_CONFIG.judgeTimeoutMs),
+})
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0)
 
@@ -229,7 +245,8 @@ function view(state: GaugeState) {
   }
 }
 
-export function apply(ctx: any): void {
+export function apply(ctx: any, config: Config): void {
+  registerJudge(ctx, config)
   // HTTP 直读 API（client 轮询）
   const webServer = ctx.get('webServer')
   if (webServer && typeof webServer.register === 'function') {
@@ -245,6 +262,25 @@ export function apply(ctx: any): void {
           try {
             const u = new URL(req.url ?? '/', 'http://localhost')
             const path = u.pathname.replace(/^\/dsh-quality-gauge\/api/, '') || '/'
+            if (req.method === 'GET' && path === '/judgments') {
+              const sid = u.searchParams.get('sessionId') ?? undefined
+              const mid = u.searchParams.get('messageId') ?? undefined
+              return send(200, { ok: true, judgments: readJudgments(sid, mid) })
+            }
+            if (req.method === 'POST' && path === '/judge') {
+              const body = JSON.parse(await new Promise<string>((resolve, reject) => {
+                let buf = ''
+                req.on('data', (c: Buffer) => { buf += c.toString('utf8') })
+                req.on('end', () => resolve(buf))
+                req.on('error', reject)
+              }))
+              const sid = String((body && body.sessionId) || '')
+              if (!sid) return send(400, { ok: false, error: 'sessionId required' })
+              const fn = (ctx as any).__dshQualityJudge
+              if (typeof fn !== 'function') return send(503, { ok: false, error: 'judge not enabled' })
+              const result = await fn(sid)
+              return send(200, result)
+            }
             if (req.method === 'GET' && path === '/status') {
               const sid = u.searchParams.get('sessionId')
               if (!sid) return send(400, { ok: false, error: 'sessionId required' })
